@@ -42,22 +42,11 @@ $(derive [makeEqF,makeShowF,smartConstructors,makeShowConstr] [''WILD])
 instance Render STUDENT
 instance Show t => Render (LIT t)
 instance Render MAJOR
-{-
+instance Render WILD
 instance (MetaRep f ~ MetaId) => Render (META f)
 instance (MetaRep f ~ MetaId) => ShowConstr (META f) where
     showConstr (Meta (MVar (MetaId rep))) = show rep
-i :: forall h f a g. (Functor f,LIT Int :<: Cxt h g,LIT String :<: Cxt h g,LIT Float :<: Cxt h g
-    ,MAJOR :<: Cxt h g,STUDENT :<: g,f :<: g) =>
-     f (LIT Int ( a)) -> f (LIT String ( a))
-    -> f (LIT Float ( a)) -> f (MAJOR ( a)) -> Cxt h g a
---i a b c d = iStudent (e a) (e b) (e c) (f d)
-    where
-        e :: (LIT d :<: Cxt h g,Functor f) =>f (LIT d a) -> Cxt h g a
-        e e2 = inject $ fmap (inj) e2 
-        f :: (MAJOR :<: Cxt h g,Functor f) => f (MAJOR ( a)) -> Cxt h g a
-        f e2 = inject $ fmap (inj) e2
--- g can be LHS f or Cxt NoHole f,  where f is Term (LIT Int)
-    ---}
+    
 i :: (
         Rep (f (LIT Int)),
         Rep (f (LIT Float)),
@@ -83,15 +72,34 @@ i a b c d = toRep $ inject $ Student (toRep $ deepInject $ fromRep a)
                     (toRep $ deepInject $ fromRep d)
 instance (f:<:g,Functor f,Functor g) => Subsume e (WILD :+: f) (WILD :+: g) where
     inj' e (Inr a) = Inr $ inj a
+    inj' e (Inl a) = Inl $ inj a
     prj' e (Inr a) = fmap Inr $ proj a
-instance (f :<: g,MetaRep x ~ MetaId,MetaRep y ~ MetaId,Functor f,Functor g) => Subsume e ((META x) :+: f) ((META y) :+: g) where
+instance (
+        (WILD :+: META (LHS f) :+: f) :<: 
+        (WILD :+: META (LHS g) :+: g) ,
+        f:<:g,Functor f,Functor g) => Subsume e (LHS f) (LHS g) where
+    inj' e (LHS a) = LHS $ deepInject a
+instance (
+        (META (RHS f) :+: f) :<: 
+        (META (RHS g) :+: g) ,
+        f:<:g,Functor f,Functor g) => Subsume e (RHS f) (RHS g) where
+    inj' e (RHS a) = RHS $ deepInject a
+instance (f :<: g,MetaRep (LHS g) ~ MetaId,MetaRep (LHS f) ~ MetaId, Functor f,Functor g) =>
+        Subsume e ((META (LHS f)) :+: f) ((META (LHS g)) :+: g) where
     inj' e (Inr a) =  Inr $ inj a
-    prj' e (Inr a) = fmap Inr $ proj a
+    inj' e (Inl (Meta (MVar a))) =  Inl $ Meta $ MVar a
+instance (f :<: g,MetaRep (RHS g) ~ MetaId,Functor f,Functor g) =>
+        Subsume e ((META (RHS f)) :+: f) ((META (RHS g)) :+: g) where
+    inj' e (Inr a) =  Inr $ inj a
+    inj' e (Inl (Meta (MVar a))) =  Inl $ Meta $ MVar a
+    
     
 e3 :: Term SIG
 e3 = i (1+1) "jh" 1.2 english
 e4 :: LHS SIG a
 e4 = i 2 __ 1.2 english
+e5 :: MetaRep (RHS (LIT Int)) a -> RHS SIG a
+e5 x = i 2 "hi" 1.2 english
 
 english :: (Rep (f g),MAJOR :<: g,MAJOR :<: PF (f g)) => f g a
 english = toRep $ iEnglish
@@ -100,39 +108,23 @@ instance Functor f => Rep (Cxt NoHole f) where
     type PF (Cxt NoHole f) = f
     toRep = toCxt
     fromRep = fmap (const ())
-    {-
-instance Num a => Num (Term (LIT a)) where
-    fromInteger = Term . L . fromInteger
-instance Fractional a => Fractional (Term (LIT a)) where
-    fromRational = Term . L . fromRational
-instance IsString (Term (LIT String)) where
-    fromString = Term . L . fromString
-    ---}
 
-type SIG = MAJOR :+: STUDENT :+: LIT String :+: LIT Int :+: LIT Float :+: ADDONS
+type SIG = STUDENT :+: MAJOR :+: LIT String :+: LIT Int :+: LIT Float :+: ADDONS
 type ADDONS = VAR :+: LAM :+: APP -- Not needed as written, but allow higher order rewrite rules.
 
+extract def = maybe def unL . proj . (\(Term m) -> m) . fromRep
 instance {-# OVERLAPPING #-} (LIT d :<: PF (r (LIT d)),Rep (r (LIT d)),Num d) => Num (r (LIT d) a) where
     fromInteger =  toRep . iL . (id :: d -> d) . fromInteger
+    signum (extract (0::d) -> a) = toRep $ iL (signum a)
+    abs (extract (0::d) -> a) = toRep $ iL (abs a)
+    (extract (0::d) -> a) + (extract (0::d) -> b) = toRep $ iL $ a + b
+    (extract (1::d) -> a) * (extract (1::d) -> b) = toRep $ iL $ a * b
+    (extract (0::d) -> a) - (extract (0::d) -> b) = toRep $ iL $ a - b
 instance {-# OVERLAPPING #-} (LIT d :<: PF (r (LIT d)),Rep (r (LIT d)),Fractional d) => Fractional (r (LIT d) a) where
     fromRational = toRep . iL . (id :: d -> d ) . fromRational
+    recip (extract (0::d) -> a) = toRep $ iL $ recip a
 instance {-# OVERLAPPING #-} (LIT d :<: PF (r (LIT d)),Rep (r (LIT d)),IsString d) => IsString (r (LIT d) a) where
     fromString = toRep . iL . (id :: d -> d) . fromString
-{-
-instance {-# OVERLAPPING #-} (Num d) => Num (Cxt h (LIT d) a) where
-    fromInteger = iL . (id :: d -> d) . fromInteger
-    abs (extract (0::d) -> a) = iL (abs a)
-    signum (extract (0::d) -> a) = iL (signum a)
-    (extract (0::Int) -> a) + (extract (0::Int) -> b) = iL $ a + b
-    (extract (0::Int) -> a) * (extract (0::Int) -> b) = iL $ a * b
-    (extract (0::Int) -> a) - (extract (0::Int) -> b) = iL $ a - b
---instance {-# OVERLAPPING #-} (LIT Float :<: f,LIT Int :<: f) => Fractional (Cxt h f b) where
-instance {-# OVERLAPPING #-} Fractional (Cxt h (LIT Float) b) where
-    fromRational = iL . (id :: Float -> Float) . fromRational
-    recip (extract (0::Float) -> a) = iL $ recip a
-instance (LIT String :<: f) => IsString (Cxt h f b) where
-    fromString = iL . (id :: String -> String) . fromString
-    ---}
 
 instance (WILD :<: f) => WildCard (Cxt h f) where
     __ = iWildCard
@@ -156,17 +148,18 @@ instance Functor f => MetaVar (Cxt NoHole (META (RHS f) :+: f)) where
             go (MApp e a) = MApp (go e) (RHS $ fmap (const ()) a)
 type instance Var (Cxt h (META (RHS f) :+: f)) = VAR
 
-{-
-e :: Cxt h SIG a
-e = iStudent 1 "hi" 1.2 iEnglish
-e2 :: Cxt h SIG a
-e2 = iStudent 1 "matching" 1.1 iMath
----}
-
-student_rule x = iStudent (meta x) "hi" 1.2 __ ==> iStudent (meta x) "matched!" (meta x) iMath
+e :: Cxt NoHole SIG a
+e = i 1 "hi" 1.2 english
+e2 :: Cxt NoHole SIG a
+e2 = i 1 "matching" 1.1 iMath
+meta' = toRep . meta
+student_rule x = iStudent (meta x) "hi" __ __ ==> iStudent (meta x) "matched!" 1.2 iMath
+student_rule' :: MetaId Int -> Rule (LHS SIG) (RHS SIG)
+student_rule' x = i (meta x) __ __ english ===> i (meta x) "matched!2" 1.2 (meta x)
 a ==> b = toRep a ===> toRep b
 
 main = do
-    -- drawTerm e3
-    --drawTerm $ stripAnn $ applyFirst app [quantify (student_rule)] $ prepare e
+    drawTerm e3
+    drawTerm (unLHS e4)
+    drawTerm $ stripAnn $ applyFirst app [quantify (student_rule' ) ] $ prepare e
     print "hi"

@@ -19,6 +19,7 @@
 -- {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# OPTIONS_GHC -fno-warn-missing-methods #-}
 module Lib
@@ -47,37 +48,21 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Foldable
 
+import Debug.Trace
+
 data STUDENT a = Student a a a a deriving Show
 data MAJOR a = English | Math | Physics deriving Show
 data LIT b a = L {unL ::b} deriving Show
 
-data COND f a = Cond (forall b. META f b) a Ordering -- deriving (Functor,Foldable,Traversable)
-instance Functor r => Functor (COND r) where fmap f (Cond (m) c a) = Cond (m) (f c) a
-instance Foldable (COND r) where foldr _ a _ = a
-{-
-instance Traversable r => Traversable (COND r) where traverse f (Cond m c a) = Cond <$> traverse f m <*> traverse f c <*> pure a
--}
-
-newtype LHS' f a = LHS' {unLHS' :: Term (WILD :+: (META (LHS' f) :+: COND (LHS' f) :+: f)) } deriving Functor
-
+--[
+$(derive [makeFunctor,makeTraversable,makeFoldable,
+          makeEqF,makeOrdF,makeShowF,smartConstructors,makeShowConstr] [''STUDENT,''LIT,''MAJOR])
+$(derive [makeEqF,makeShowF,smartConstructors,makeShowConstr] [''WILD])
+$(derive [smartRep] [''STUDENT,''LIT,''MAJOR]) 
+$(derive [makeOrdF] [''VAR,''LAM,''APP])
+--]
 type SIG = STUDENT :+: MAJOR :+: LIT Int :+: LIT String :+: LIT Float :+: ADDONS
 type ADDONS = VAR :+: LAM :+: APP -- Not needed as written, but allow higher order rewrite rules.
-
-type S = LIT Int
-
-instance WildCard (LHS' f) where
-    __ = LHS' $ Term . Inl $ WildCard
-
-instance MetaVar (LHS' f) where
-    type MetaRep (LHS' f) = MetaId
-    type MetaArg (LHS' f) = Var (LHS' f)
-    metaExp = LHS' . Term . Inr . Inl . Meta
-    
-instance Rep (LHS' f)
-  where
-    type PF (LHS' f) = WILD :+: META (LHS' f) :+: COND (LHS' f) :+: f
-    toRep   = LHS'
-    fromRep = unLHS'   
 
 compareMod :: (OrdF f, Functor f, Foldable f) => f a -> f b -> Ordering -> Maybe [(a,b)]
 compareMod s t ordering
@@ -97,14 +82,14 @@ matchM' :: forall f a --[
     => LHS' f a
     -> Term (f :&: Set.Set Name)
     -> ReaderT AlphaEnv (WriterT (Data.Rewriting.Rules.Subst (f :&: Set.Set Name)) Maybe) ()
-matchM' (LHS' lhs) t = go lhs t 
+matchM' (LHS' cond (LHS lhs)) t = go lhs t 
   where
     go (Term (Inl WildCard)) _ = return ()
     
     go (Term (Inr (Inl (Meta mv)))) t = ReaderT $ \env -> goo env mv t
       where
         goo :: AlphaEnv
-            -> MetaExp (LHS' f) b
+            -> MetaExp (LHS f) b
             -> Term (f :&: Set.Set Name)
             -> WriterT (Data.Rewriting.Rules.Subst (f :&: Set.Set Name)) Maybe ()
         goo env (MVar (MetaId m)) t
@@ -131,54 +116,49 @@ matchM' (LHS' lhs) t = go lhs t
       , Just (Lam w b) <- proj g
       = local (oInsert (v,w)) $ go a b
 
-    go (Term (Inr (Inr (Inr f)))) (Term (g :&: _))
+    go (Term (Inr (Inr (f)))) (Term (g :&: _))
       | Just subs <- eqMod f g
       = mapM_ (uncurry go) subs
       
-    go (Term (Inr (Inr (Inl (Cond (Meta mv) ((Term (Inr (Inr (Inr f))))) ordering))))) t@(Term (g :&: _))
-      | compareF (fmap (const ()) f) (fmap (const ()) g) == ordering = ReaderT $ \env -> goo env mv t
-      | otherwise = fail "no match"
-          where
-            goo :: AlphaEnv
-                -> MetaExp (LHS' f) b
-                -> Term (f :&: Set.Set Name)
-                -> WriterT (Data.Rewriting.Rules.Subst (f :&: Set.Set Name)) Maybe ()
-            goo env (MVar (MetaId m)) t
-                | Set.null (Set.intersection boundInPatt freeIn_t) = tell [(m,t)]
-                | otherwise = fail "Variables would escape"
-              where
-                boundInPatt = Map.keysSet $ snd env
-                freeIn_t    = getAnn t
-            goo env (MApp mv (Var v)) t = do
-              let Just w = oLookupL v env
-                    -- Lookup failure is a bug rather than a matching failure
-              goo env mv (Term (inj (Lam w t) :&: Set.delete w (getAnn t)))
-
     go _ _ = fail "No match" --]
     
 type instance Var (LHS' f) = VAR
 instance (VAR :<: PF (LHS' f), LAM :<: PF (LHS' f), Functor f, Foldable f) =>
     Bind (LHS' f)
   where
-    var = LHS' . inject . Var . toInteger
+    var = LHS'' . LHS . inject . Var . toInteger
     lam = mkLam id
 
+evalBoolean :: (Render f,Traversable f,OrdF f,VAR :<: f,LAM :<: f,VAR :<: PF (RHS f), LAM :<: PF (RHS f),APP :<: f) =>
+    BOOL f a -> Data.Rewriting.Rules.Subst (f :&: Set.Set Name) -> Maybe Bool
+evalBoolean (Boolean a b ord) subs = do
+    a' <- substitute app subs a
+    b' <- substitute app subs b
+    --trace (showTerm $ stripAnn $ a') (Just undefined)
+    --trace (showTerm $ stripAnn $ b') (Just undefined)
+    return $ compareF' (stripAnn a') (stripAnn b') ord
+    
+    
 rewrite' --[
-    :: ( VAR :<: f
+    :: forall f g. ( VAR :<: f
        , LAM :<: f
+       , APP :<: f
        , VAR :<: PF (LHS' f)
        , LAM :<: PF (LHS' f)
        , VAR :<: PF (RHS f)
        , LAM :<: PF (RHS f)
-       , Traversable f, EqF f,OrdF f
+       , Traversable f, EqF f,OrdF f,Render f
        , g ~ (f :&: Set.Set Name)
        )
     => (Term g -> Term g -> Term g)  -- ^ Application operator
     -> Rule (LHS' f) (RHS f)
     -> Term g
     -> Maybe (Term g)
-rewrite' app (Rule lhs rhs) t = do
-    subst <- match' lhs t
+rewrite' app (Rule lhs@(LHS' conds _) rhs) t = do
+    (subst :: forall . Data.Rewriting.Rules.Subst (f :&: Set.Set Name)) <- match' lhs t
+    c <- conds
+    cont <- evalBoolean c subst
+    guard cont
     substitute app subst rhs --]
 
 match' --[
@@ -191,11 +171,6 @@ match' --[
     => LHS' f a -> Term (f :&: Set.Set Name) -> Maybe (Data.Rewriting.Rules.Subst (f :&: Set.Set Name))
 match' lhs = solveSubstAlpha <=< execWriterT . flip runReaderT oEmpty . matchM' lhs --]
 
-$(derive [makeFunctor,makeTraversable,makeFoldable,
-          makeEqF,makeOrdF,makeShowF,smartConstructors,makeShowConstr] [''STUDENT,''LIT,''MAJOR])
-$(derive [makeEqF,makeShowF,smartConstructors,makeShowConstr] [''WILD])
-$(derive [smartRep] [''STUDENT,''LIT,''MAJOR]) 
-$(derive [makeOrdF] [''VAR,''LAM,''APP])
 -- Render and Show and Rep Cxt [
 instance Render STUDENT
 instance Show b => Render (LIT b)
@@ -226,27 +201,40 @@ instance (Rep (r f),f :<: PF (r f),LIT Float :<: PF (r f),LIT Int :<: PF (r f))
 instance (Rep (r f),f :<: PF (r f),LIT String :<: PF (r f)) => IsString (r f a) where
     fromString = toRep . iL . (id :: String -> String) . fromString --]
 
-e2 :: LHS SIG a
-e2 = rStudent __ "gj" 1.3 rMath
-
-class Conditional r where
-    cond :: forall f a. (Rep r,COND r :<: PF r,Functor (PF r),MetaRep r a ~ MetaId a) => MetaRep r a -> r a -> Ordering -> r a
-instance Conditional (LHS' f) where
-    cond a b c = toRep $ (fmap (const ()) $ Term $ Inr $ Inr $ Inl $ Cond (Meta $ MVar a) (fromRep b) c)
+instance Rep (LHS' f)
+  where
+    type PF (LHS' f) = WILD :+: META (LHS f) :+: f
+    toRep  = LHS'' . LHS
+    fromRep = unLHS . unLHS'   
 
 e :: Term SIG
-e = rStudent 1 "hi" 1.2 rEnglish
+e = rStudent 1 "NOT matched" 1.2 rEnglish
 
-e5 :: (Rep (r SIG),LIT Int :<: PF (r SIG)) => r SIG a
-e5 = rL (2 :: Int)
+data LHS' f a = LHS' { unC :: Maybe (BOOL f a), unLHS' :: LHS f a } --Term (WILD :+: (META (LHS' f) :+: f))}
+pattern LHS'' a = LHS' Nothing a
 
-student_rule x = rStudent (cond x 2 GT) __ __ __ ===> rStudent 99999 "matched" (meta x) rEnglish
---student_rule' x = rStudent (meta x) __ __ rEnglish ===> rStudent (meta x) "matched!2" 1.2 rEnglish 
+guarded a b = LHS' (Just b) a
+
+data BOOL f a = Boolean (RHS f a) (RHS f a) [Ordering]
+
+(.<) :: Ord a => RHS f a -> RHS f a -> BOOL f a
+a .< b = Boolean a b [LT]
+(.>) :: Ord a => RHS f a -> RHS f a -> BOOL f a
+a .> b = Boolean a b [GT]
+(.>=) :: Ord a => RHS f a -> RHS f a -> BOOL f a
+a .>= b = Boolean a b [GT,EQ]
+(.<=) :: Ord a => RHS f a -> RHS f a -> BOOL f a
+a .<= b = Boolean a b [LT,EQ]
+(.==) :: Ord a => RHS f a -> RHS f a -> BOOL f a
+a .== b = Boolean a b [EQ]
+compareF' a b ord = any (== compareF a b) ord
+
+(.|) = guarded
+infixr 7 .|
+
+student_rule x = rStudent (meta x) __ __ __ .| meta x .<= rL (1::Int) ===> rStudent 99999 "matched" 1.2 rMath
+student_rule2 x = rStudent (meta x) __ __ __ .| meta x .> rL (1::Int) ===> rStudent 99999 "matched" 1.2 rMath
 
 main = do
-    --drawTerm e5
-    --drawTerm (unLHS e2)
-    --drawTerm $ stripAnn $ applyFirst app [quantify student_rule ] $ prepare e
-    --drawTerm $ stripAnn $ applyFirst app [quantify student_rule' ] $ prepare e
-    drawTerm $ maybe e id $ fmap stripAnn $ rewrite' app (quantify (student_rule )) $ prepare e
-    print "hi"
+    drawTerm $ maybe e id $ fmap stripAnn $ rewrite' app (quantify (student_rule  )) $ prepare e
+    drawTerm $ maybe e id $ fmap stripAnn $ rewrite' app (quantify (student_rule2  )) $ prepare e

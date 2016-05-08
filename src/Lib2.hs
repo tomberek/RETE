@@ -21,7 +21,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# OPTIONS_GHC -fno-warn-missing-methods #-}
+--{-# OPTIONS_GHC -fno-warn-missing-methods #-}
 module Lib
     ( ) where
 
@@ -53,17 +53,34 @@ import Debug.Trace
 data STUDENT a = Student a a a a deriving Show
 data MAJOR a = English | Math | Physics deriving Show
 data LIT b a = L {unL ::b} deriving Show
+data NUM a = Plus a a | Minus a a | Times a a | Negate a | Divide a a
 
 --[
 $(derive [makeFunctor,makeTraversable,makeFoldable,
-          makeEqF,makeOrdF,makeShowF,smartConstructors,makeShowConstr] [''STUDENT,''LIT,''MAJOR])
+          makeEqF,makeOrdF,makeShowF,smartConstructors,makeShowConstr] [''STUDENT,''LIT,''MAJOR,''NUM])
 $(derive [makeEqF,makeShowF,smartConstructors,makeShowConstr] [''WILD])
 $(derive [smartRep] [''STUDENT,''LIT,''MAJOR]) 
 $(derive [makeOrdF] [''VAR,''LAM,''APP])
 --]
 type SIG = STUDENT :+: MAJOR :+: LIT Int :+: LIT String :+: LIT Float :+: ADDONS
+
 type ADDONS = VAR :+: LAM :+: APP -- Not needed as written, but allow higher order rewrite rules.
 
+
+data Expr f a = Expr {unExpr :: Term f}
+instance (Functor f,NUM :<: f,Num b,LIT b :<: f) => Num (Expr f b) where
+    fromInteger = Expr . iL . (id :: b -> b) . fromInteger
+    signum (Expr a) = Expr . iL $ maybe (0::b) id $ do 
+        a' <- project a
+        return $ signum $ unL a'
+    abs (Expr a) = Expr . iL $ maybe (0::b) id $ do 
+        a' <- project a
+        return $ abs $ unL a'
+    Expr a + Expr b = Expr $ iPlus a b
+    Expr a - Expr b = Expr $ iMinus a b
+    Expr a * Expr b = Expr $ iTimes a b
+
+--[
 compareMod :: (OrdF f, Functor f, Foldable f) => f a -> f b -> Ordering -> Maybe [(a,b)]
 compareMod s t ordering
     | compareF (unit s) (unit' t) == ordering = Just args
@@ -129,15 +146,6 @@ instance (VAR :<: PF (LHS' f), LAM :<: PF (LHS' f), Functor f, Foldable f) =>
     var = LHS'' . LHS . inject . Var . toInteger
     lam = mkLam id
 
-evalBoolean :: (Render f,Traversable f,OrdF f,VAR :<: f,LAM :<: f,VAR :<: PF (RHS f), LAM :<: PF (RHS f),APP :<: f) =>
-    BOOL f a -> Data.Rewriting.Rules.Subst (f :&: Set.Set Name) -> Maybe Bool
-evalBoolean (Boolean a b ord) subs = do
-    a' <- substitute app subs a
-    b' <- substitute app subs b
-    --trace (showTerm $ stripAnn $ a') (Just undefined)
-    --trace (showTerm $ stripAnn $ b') (Just undefined)
-    return $ compareF' (stripAnn a') (stripAnn b') ord
-    
     
 rewrite' --[
     :: forall f g. ( VAR :<: f
@@ -206,7 +214,7 @@ instance Rep (LHS' f)
     type PF (LHS' f) = WILD :+: META (LHS f) :+: f
     toRep  = LHS'' . LHS
     fromRep = unLHS . unLHS'   
-
+--]
 e :: Term SIG
 e = rStudent 1 "NOT matched" 1.2 rEnglish
 
@@ -215,20 +223,28 @@ pattern LHS'' a = LHS' Nothing a
 
 guarded a b = LHS' (Just b) a
 
-data BOOL f a = Boolean (RHS f a) (RHS f a) [Ordering]
+data BOOL f a = Boolean (Data.Rewriting.Rules.Subst (f :&: Set.Set Name) -> Maybe Bool)
+data COND f a = forall b. Cond (COND f b) (COND f b) (f b -> f b -> Ordering) [Ordering] | R (RHS f a)
+a = Cond (R $ RHS $ iL (4 ::Int)) (R $ RHS $ iL (5::Int)) (compareF :: LIT Int Int -> LIT Int Int -> Ordering) [LT]
 
-(.<) :: Ord a => RHS f a -> RHS f a -> BOOL f a
-a .< b = Boolean a b [LT]
-(.>) :: Ord a => RHS f a -> RHS f a -> BOOL f a
-a .> b = Boolean a b [GT]
-(.>=) :: Ord a => RHS f a -> RHS f a -> BOOL f a
-a .>= b = Boolean a b [GT,EQ]
-(.<=) :: Ord a => RHS f a -> RHS f a -> BOOL f a
-a .<= b = Boolean a b [LT,EQ]
-(.==) :: Ord a => RHS f a -> RHS f a -> BOOL f a
-a .== b = Boolean a b [EQ]
-compareF' a b ord = any (== compareF a b) ord
-
+evalBoolean :: (Render f,Traversable f,OrdF f,VAR :<: f,LAM :<: f,VAR :<: PF (RHS f), LAM :<: PF (RHS f),APP :<: f) =>
+    BOOL f a -> Data.Rewriting.Rules.Subst (f :&: Set.Set Name) -> Maybe Bool
+evalBoolean (Boolean arg) subs = arg subs
+    
+ordHelp :: (Traversable f,Ord a,VAR :<: f,LAM :<: f,VAR :<: PF (RHS f),LAM :<: PF (RHS f),APP :<: f,OrdF f)
+    => [Ordering] -> RHS f a -> RHS f a -> BOOL f a
+ordHelp ords a b = Boolean $ \subs -> do
+    a' <- substitute app subs a
+    b' <- substitute app subs b
+    --trace (showTerm $ stripAnn $ b') (Just undefined)
+    return $ any (== compareF (stripAnn a') (stripAnn b')) ords
+(.<) :: (Traversable f,Ord a,VAR :<: f,LAM :<: f,VAR :<: PF (RHS f),LAM :<: PF (RHS f),APP :<: f,OrdF f) => RHS f a -> RHS f a -> BOOL f a
+(.<) = ordHelp [LT]
+(.>) = ordHelp [GT]
+(.>=) = ordHelp [GT,EQ]
+(.<=) = ordHelp [LT,EQ]
+(.==) = ordHelp [EQ]
+    
 (.|) = guarded
 infixr 7 .|
 

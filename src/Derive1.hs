@@ -27,27 +27,29 @@ smartRep fname = do
                     vars3 = zipWith varFunc vars args
                     varFunc v (VarT a) | elem a (init targs) = v
                                        | otherwise           = [| fromRep $v |]
-                    varFunc v _ = v
+                    varFunc v _ = [| fromRep $v |]
                     val = foldl appE (conE name) vars3
                     sig = genSig targs tname sname (length args) args
                     function = [funD sname [clause pats (normalB [|toRep $ inject $val|]) []]]
                 sequence $ sig ++ function
               genSig targs tname sname num args = (:[]) $ do
+                varNs <- newNames (length args +1) "a"
                 let 
                     rvar = mkName "r"
                     avar = mkName "a"
                     targs' = init targs
-                    vars = rvar:avar:targs
+                    vars = rvar:avar:targs ++ varNs
                     r = varT rvar
                     a = varT avar
                     ftype = foldl appT (conT tname) (map varT targs')
                     constr = foldl appT (conT ''(:<:)) [ftype, appT (conT ''PF) r]
                     constr2 = appT (conT ''Rep) r
-                    typ = foldr appT (appT r a) $ map typFun args
-                    typFun a@(VarT e) | elem e (init targs) = appT arrowT $ return a
-                                      | otherwise = appT arrowT (appT r $ tupleT 0)
-                    typFun a@(ConT _) = appT arrowT $ return a
-                    typFun a = appT arrowT $ return a
+                    typ = foldr appT (appT r a) $ map (typFun) $ zip varNs args
+                    typFun (v,a@(VarT e)) | elem e (targs') = appT arrowT $ varT e
+                                      | otherwise = appT arrowT (appT r $ varT v)
+                    typFun (v,a@(ConT _)) = appT arrowT $ return a
+                    typFun (v,a@(AppT app e'@(VarT e))) | elem e (targs') = appT arrowT $ appT r $ appT (return app) $ return e'
+                    typFun (_,a2) = appT arrowT $ appT r $ a
                     typeSig = forallT (map PlainTV vars) (sequence [constr,constr2]) typ
                 sigD sname typeSig
       

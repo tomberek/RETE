@@ -36,6 +36,6 @@ resolver: lts-5.3
 # ghc-8.0.0.20160411
 nix:
     enable: true
-    packages: [ pkgs.haskellPackages.ghcid pkgs.haskellPackages.happy ]
+    packages: [ pkgs.haskellPackages.ghcid, pkgs.haskellPackages.happy ]
 
 

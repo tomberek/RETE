@@ -21,7 +21,9 @@ module Lib
 import Data.Comp
 import Data.Comp.Derive
 import Data.Comp.Render
+import Data.Comp.TermRewriting (reduce)
 import Data.Rewriting.Rules
+import Data.Rewriting.FirstOrder (bottomUp)
 import Data.Rewriting.HigherOrder
 import Data.String(IsString(..))
 import Data.Maybe(fromMaybe)
@@ -47,23 +49,26 @@ type SIG = NUM :+: STUDENT :+: MAJOR :+: LIT Int :+: LIT String :+: LIT Float :+
 type ADDONS = VAR :+: LAM :+: APP -- Not needed as written, but allow higher order rewrite rules.
 newtype Expr f a = Expr {unExpr :: Term f} deriving Functor
 
-class (Rep f,STUDENT :<: PF f) => Student f where
-    student :: f Int -> f String -> f Int -> f (MAJOR a) -> f b
-    student a b c d = toRep $ iStudent (fromRep a) (fromRep b) (fromRep c) (fromRep d)
-instance (Rep r,STUDENT :<: PF r) => Student r
+-- Restricted smart constructors [
+student :: (Rep r,STUDENT :<: PF r) => r Int -> r String -> r Int -> r (MAJOR b) -> r b
+student = rStudent
+
+l :: (LIT a :<: PF r, Rep r) => a -> r a
+l = rL
+--]
 
 deriving instance Functor (LHS f)
 deriving instance Functor (RHS f)
 
 instance (LIT a :<: PF (r f),Functor (r f),Num a,Rep (r f)) => Num (r (f :: * -> *) a) where
-    fromInteger = rL . (id :: a -> a) . fromInteger
-    abs (fromRep -> a) = rL $ fromMaybe (0::a) $ do 
+    fromInteger = l . fromInteger
+    abs (fromRep -> a) = l $ fromMaybe 0 $ do 
         a' <- project a
         return $ abs $ unL a'
 instance (LIT a :<: PF (r f),Functor (r f),Fractional a,Rep (r f)) => Fractional (r (f :: * -> *) a) where
-    fromRational = rL . (id :: a -> a) . fromRational
+    fromRational = l . fromRational
 instance (LIT String :<: PF (r f),Functor (r f),Rep (r f)) => IsString (r (f :: * -> *) String) where
-    fromString = rL . (id :: String -> String) . fromString
+    fromString = l . fromString
     
 rewrite' --[
     :: ( VAR :<: f
@@ -85,7 +90,7 @@ rewrite' app (Rule lhs'@(LHS' conds lhs) rhs) t = do
     case conds of
         Nothing -> return ()
         Just c -> do
-            cont <- unBOOL c subst
+            cont <- unBOOL (unTerm c) subst
             guard cont
     substitute app subst rhs --]
 
@@ -103,25 +108,27 @@ instance Rep (Expr f) where
     type PF (Expr f) = f
     toRep = Expr
     fromRep = unExpr
-     --]
     
-instance Rep (LHS' f) --[
+instance Rep (LHS' f)
   where
     type PF (LHS' f) = WILD :+: META (LHS f) :+: f
     toRep  = LHS'' . LHS
     fromRep = unLHS . unLHS'   
 --]
 
-data LHS' f a = LHS' { unC :: Maybe (BOOL f a), unLHS' :: LHS f a } --Term (WILD :+: (META (LHS' f) :+: f))}
+data LHS' f a = LHS' { unC :: Maybe (Conditional f), unLHS' :: LHS f a } --Term (WILD :+: (META (LHS' f) :+: f))}
 pattern LHS'' a = LHS' Nothing a
 
 guarded a b = LHS' (Just b) a
 
 data BOOL f a = Boolean {unBOOL :: Data.Rewriting.Rules.Subst (f :&: Set.Set Name) -> Maybe Bool}
-boolHelper :: (Bool -> Bool -> Bool) -> BOOL f a -> BOOL f b -> BOOL f c
-boolHelper boolFun f g = Boolean $ \subs -> do
-    f' <- unBOOL f subs
-    g' <- unBOOL g subs
+            | a :&& a
+            | a :|| a
+type Conditional f = Term (BOOL f)
+
+boolHelper boolFun f g = Term $ Boolean $ \subs -> do
+    f' <- unBOOL (unTerm f) subs
+    g' <- unBOOL (unTerm g) subs
     return (f' `boolFun` g')
 (.&&) = boolHelper (&&)
 (.||) = boolHelper (||)
@@ -129,13 +136,12 @@ infixr 4 .&& , .||
 notB f = Boolean $ unBOOL f >=> return . not
     
 ordHelp :: (Traversable f,Ord a,VAR :<: f,LAM :<: f,VAR :<: PF (RHS f),LAM :<: PF (RHS f),APP :<: f,OrdF f)
-    => [Ordering] -> RHS f a -> RHS f a -> BOOL f a
-ordHelp ords a b = Boolean $ \subs -> do
+    => [Ordering] -> RHS f a -> RHS f a -> Term (BOOL f)
+ordHelp ords a b = Term $ Boolean $ \subs -> do
     a' <- substitute app subs a
     b' <- substitute app subs b
-    --trace (showTerm $ stripAnn $ b') (Just undefined)
     return $ elem (compareF (stripAnn a') (stripAnn b')) ords
-(.<) :: (Traversable f,Ord a,VAR :<: f,LAM :<: f,VAR :<: PF (RHS f),LAM :<: PF (RHS f),APP :<: f,OrdF f) => RHS f a -> RHS f a -> BOOL f a
+    
 (.<) = ordHelp [LT]
 (.>) = ordHelp [GT]
 (.>=) = ordHelp [GT,EQ]
@@ -149,7 +155,7 @@ ex :: Expr SIG a
 ex = student 1 "NOT matched" 2 rEnglish
 
 --student_rule3 :: _ => MetaId Int -> Rule (LHS' f) rhs
-student_rule3 x y= student (meta x) __ (meta y) __ .| meta x .<= 1 .&&
+student_rule x y= student (meta x) __ (meta y) __ .| meta x .<= 1 .&&
                                                       meta x .> 0  .&&
                                                       meta y .> meta x
                     ===>
@@ -161,5 +167,5 @@ student_rule2 x = student (meta x) __ __ __ .| meta x .> 1
 
 main = do
     let e = unExpr ex
-    drawTerm $ maybe e stripAnn $ rewrite' app (quantify student_rule3 ) $ prepare e
-    drawTerm $ maybe e stripAnn $ rewrite' app (quantify student_rule2 ) $ prepare e
+    drawTerm $  rewriteWith (reduce $ rewrite' app $ quantify student_rule) e
+    drawTerm $  rewriteWith (reduce $ rewrite' app $ quantify student_rule2) e

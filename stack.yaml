@@ -1,41 +1,59 @@
-flags: {}
-extra-package-dbs: []
-packages:
-- '.'
+resolver: nightly-2016-04-19
+compiler: ghc-8.0.0.20160421
+compiler-check: match-exact
 setup-info:
   ghc:
     linux64:
-      8.0.0.20160411:
-        url: https://downloads.haskell.org/~ghc/8.0.1-rc4/ghc-8.0.0.20160421-x86_64-deb8-linux.tar.xz
-        sha1: 6e8bd7c96fa46da0b8c12bf9d62f006940adfe67
-extra-deps:
-- QuickCheck-2.8.2
-- compdata-0.10
-- cpphs-1.20.1
-- derive-2.5.24
-- hashable-1.2.4.0
-- haskell-src-exts-1.17.1
-- ho-rewriting-0.2
-- mtl-2.2.1
-- old-locale-1.0.0.7
-- old-time-1.1.0.3
-- patch-combinators-0.2.2
-- polyparse-1.12
-- primitive-0.6.1.0
-- random-1.1
-- syb-0.6
-- text-1.2.2.1
-- tf-random-0.5
-- th-expand-syns-0.4.0.0
-- tree-view-0.4
-- uniplate-1.6.12
-- unordered-containers-0.2.7.0
-# compiler: lts-5.3
-#ghc-8.0.0.20160411
-resolver: lts-5.3
-# ghc-8.0.0.20160411
+      8.0.0.20160421:
+        url: "http://downloads.haskell.org/~ghc/8.0.1-rc4/ghc-8.0.0.20160421-x86_64-deb8-linux.tar.xz"
+    macosx:
+      8.0.0.20160421:
+        url: "https://downloads.haskell.org/~ghc/8.0.1-rc4/ghc-8.0.0.20160421-x86_64-apple-darwin.tar.xz"
+image:
+  containers:
+    - base: "fpco/stack-base" # see ./etc/docker/stack-base/Dockerfile
+      name: "fpco/stack-test"
 nix:
-    enable: true
-    packages: [ pkgs.haskellPackages.ghcid, pkgs.haskellPackages.happy ]
-
+  # --nix on the command-line to enable.
+  enable: false
+  packages:
+    - zlib
+extra-deps:
+- ho-rewriting-0.2
+- derive-2.5.25
+- patch-combinators-0.2.2
+# - compdata-0.10
+- hpack-0.12.0
+- mtl-2.2.1
+- path-0.5.7
+- path-io-1.1.0
+- transformers-0.5.2.0
+- unix-2.7.2.0
+- persistent-template-2.5.1
+- persistent-2.5
+- monad-unlift-0.1.2.0
+packages:
+- ./../compdata
+- .
+# https://github.com/ekmett/either/issues/44
+- location:
+    git: https://github.com/ekmett/either
+    commit: 40261cf
+  extra-dep: true
+# Not the commit this links to, but discussed on
+# https://github.com/haskell/bytestring/commit/717f1151751fceb4e49874737dd0f15839ffd541
+- location:
+    git: https://github.com/haskell/bytestring
+    commit: 994a845
+  extra-dep: true
+- location:
+    git: https://github.com/haskell/containers
+    commit: d0ad235
+  extra-dep: true
+# https://github.com/sol/hpack/pull/92
+- location:
+    git: https://github.com/mgsloan/hpack
+    commit: e7b53c8
+  extra-dep: true
+allow-newer: true
 

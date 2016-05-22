@@ -12,7 +12,7 @@ import Data.Comp.Term
 import Data.Rewriting.Rules
 
 smartRep fname = do
-    TyConI (DataD _cxt tname targs constrs _deriving) <- abstractNewtypeQ $ reify fname
+    TyConI (DataD _cxt tname targs mkind constrs _deriving) <- abstractNewtypeQ $ reify fname
     let cons = map abstractConType constrs
     liftM concat $ mapM (genSmartConstr (map tyVarBndrName targs) tname) cons
         where genSmartConstr targs tname (name, args) = do
